@@ -15,6 +15,8 @@ from model.utils.bbox_tools import bbox_iou, loc2bbox, bbox2loc, generate_anchor
 from model.utils.init_tools import init_layer
 from model.utils.creators import AnchorTargetCreator, ProposalTargetCreator
 
+from model.utils.no_grad import without_grad
+
 
 class ProposalCreator(object):
     def __init__(
@@ -34,18 +36,22 @@ class ProposalCreator(object):
         self.n_test_pre_nms = n_test_pre_nms
         self.n_test_post_nms = n_test_post_nms
         self.min_size = min_size
-
-    def __call__(self, locs, scores, anchors, img_size, scale=1.):
-
+    
+    @without_grad
+    def __call__(self, locs, scores, anchors, img_size, scale):
+        
+        device = locs.device
+        
         # Transform all regression locations to bboxes
         rois = loc2bbox(anchors, locs)
         rois[:, 0:4:2] = torch.clamp(rois[:, 0:4:2], 0, img_size[0])
         rois[:, 1:4:2] = torch.clamp(rois[:, 1:4:2], 0, img_size[1])
-
+        
         # Drop the small rois under the minimum size
         min_size = self.min_size * scale
         hs = rois[:, 2] - rois[:, 0]
         ws = rois[:, 3] - rois[:, 1]
+        
         keep = torch.where((hs >= min_size) & (ws >= min_size))[0]
         rois = rois[keep, :]
         scores = scores[keep]
@@ -71,14 +77,6 @@ class ProposalCreator(object):
             keep = keep[:n_post_nms]
         rois = rois[keep]
         return rois
-
-
-# For running predict function without computing gradients
-def without_grad(f):
-    def new_f(*arg, **kwargs):
-        with torch.no_grad():
-            return f(*arg, **kwargs)
-    return new_f
 
 
 class RegionProposalNetwork(nn.Module):  # RPN
@@ -109,8 +107,18 @@ class RegionProposalNetwork(nn.Module):  # RPN
         init_layer(self.score_layer, mean=0, std=0.01)
         init_layer(self.loc_layer, mean=0, std=0.01)
 
-    def forward(self, x, img_size, scale=1.):  # x should be in the form of the batch
+    def forward(self, x, img_size, scale):  # x should be in the form of the batch
         n, _, fm_height, fm_width = x.shape
+        
+        # Hidden Layer: 3x3 Conv. 512 => output Nx512x(H/16)x(W/16)
+        h = F.relu(self.conv1(x))
+        
+        # Locations: 1x1 Conv. 4 output => output Nx4x(H/16)x(W/16)
+        rpn_locs = self.loc_layer(h)
+        rpn_locs = rpn_locs.permute(0, 2, 3, 1).contiguous().view(n, -1, 4)
+        
+        # Scores: 1x1 Conv. n_anchors * 2 = 18 => output Nx18x(H/16)x(W/16)
+        rpn_scores = self.score_layer(h)
 
         shifted_anchors = self._enumerate_shifted_anchor(
             self.anchor_base,
@@ -120,15 +128,6 @@ class RegionProposalNetwork(nn.Module):  # RPN
 
         n_anchors = self.anchor_base.shape[0]
 
-        # Hidden Layer: 3x3 Conv. 512 => output Nx512x(H/16)x(W/16)
-        h = F.relu(self.conv1(x))
-
-        # Locations: 1x1 Conv. 4 output => output Nx4x(H/16)x(W/16)
-        rpn_locs = self.loc_layer(h)
-        rpn_locs = rpn_locs.permute(0, 2, 3, 1).contiguous().view(n, -1, 4)
-
-        # Scores: 1x1 Conv. n_anchors * 2 = 18 => output Nx18x(H/16)x(W/16)
-        rpn_scores = self.score_layer(h)
         rpn_softmax_scores = F.softmax(rpn_scores.view(n, fm_height, fm_width, n_anchors, 2), dim=4)
         rpn_fg_scores = rpn_softmax_scores[:, :, :, :, 1].contiguous()
         rpn_fg_scores = rpn_fg_scores.view(n, -1)
@@ -139,7 +138,7 @@ class RegionProposalNetwork(nn.Module):  # RPN
         roi_idx = list()
         for i in range(n):
             roi = self.proposal_layer(
-                rpn_locs[i], rpn_fg_scores[i], shifted_anchors, img_size, scale=scale
+                rpn_locs[i], rpn_fg_scores[i], shifted_anchors, img_size, scale
             )
             batch_idx = i * torch.ones((len(roi),), dtype=torch.int32)
             rois.append(roi)
@@ -147,7 +146,15 @@ class RegionProposalNetwork(nn.Module):  # RPN
 
         rois = torch.cat(rois, dim=0)
         roi_idx = torch.cat(roi_idx, dim=0)
-        return rpn_locs, rpn_scores, rois, roi_idx, shifted_anchors
+        
+        # print(rpn_locs.shape, rpn_scores.shape, rois.shape, roi_idx.shape, shifted_anchors.shape)
+        # rpn_locs with the shape of (1, n_anchors, 4)
+        # rpn_scores with the shape of (1, n_anchors, 2)
+        # rois with the shape of (2000, 4)
+        # roi_idx with the shape of (2000)
+        # shifted_anchors with the shape of (n_anchors, 4)
+         
+        return rpn_locs[0], rpn_scores[0], rois, roi_idx, shifted_anchors
 
     @staticmethod
     def _enumerate_shifted_anchor(anchor_base, feat_stride, height, width):
@@ -173,7 +180,7 @@ class RegionProposalNetwork(nn.Module):  # RPN
         n_anchors = anchor_base.shape[0]
         n_cells = shift.shape[0]
         anchors = anchor_base.view((1, n_anchors, 4)) + shift.view((1, n_cells, 4)).permute((1, 0, 2))
-        anchors = anchors.view((n_cells * n_anchors, 4)).type(torch.float32)
+        anchors = anchors.view((n_cells * n_anchors, 4))
         return anchors
 
 
@@ -194,10 +201,13 @@ class FasterRcnn(nn.Module):
         self.anchor_target_creator = AnchorTargetCreator()
         self.proposal_target_creator = ProposalTargetCreator()
 
-        # mean and std of the bboxes
+        # mean and std of the locs
         self.loc_normalize_mean = loc_normalize_mean
         self.loc_normalize_std = loc_normalize_std
         self.use_preset("evaluate")
+        
+        # Device
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def use_preset(self, preset):
         if preset == "visualize":
@@ -213,27 +223,35 @@ class FasterRcnn(nn.Module):
     def n_classes(self):
         return self.head.n_classes
 
-    def forward(self, imgs, bboxes, labels, scale=1.):
-        img_size = imgs.shape[2:]
+    def forward(self, imgs, bboxes, labels, scale):
+        
+        # print("self.device :", self.device)
+        # print("######### In Faster R-CNN ##############")
+        # print("imgs: ", imgs.device)
+        # print("bboxes: ", bboxes.device)
+        # print("labels: ", labels.device)
+        
+        img_size = imgs.shape[2:]  # imgs with shape [batch_size, C, H, W]
         features = self.extractor(imgs)
         rpn_locs, rpn_scores, rois, roi_idx, shifted_anchors = self.rpn(features, img_size, scale)
-
-        bboxes = bboxes.squeeze(dim=0)
-        labels = labels.squeeze(dim=0)
-        rpn_scores = rpn_scores.squeeze(dim=0)
-        rpn_locs = rpn_locs.squeeze(dim=0)
 
         # RPN Ground Truth
         gt_rpn_locs, gt_rpn_labels = self.anchor_target_creator(
             bboxes, shifted_anchors, img_size
         )
+        # print(gt_rpn_labels)
 
         roi_samples, gt_roi_locs, gt_roi_labels = self.proposal_target_creator(
             rois, bboxes, labels,
             self.loc_normalize_mean,
             self.loc_normalize_std
         )
-        roi_sample_idx = torch.zeros(len(roi_samples))
+        roi_sample_idx = torch.zeros(len(roi_samples)).to(self.device)
+        
+        # print("features: ", features.device)
+        # print("roi_samples:", roi_samples.device)
+        # print("roi_sample_idx", roi_sample_idx.device)
+        
         roi_cls_locs, roi_scores = self.head(features, roi_samples, roi_sample_idx)
 
         return (

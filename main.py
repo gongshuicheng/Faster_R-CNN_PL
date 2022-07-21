@@ -6,6 +6,7 @@
 """
 
 import os
+import torch
 import pytorch_lightning as pl
 from argparse import ArgumentParser
 from pytorch_lightning import Trainer
@@ -67,7 +68,8 @@ def main(args):
     #     name=args.log_dir,
     # )
     
-    trainer = Trainer.from_argparse_args(args, log_every_n_steps=1)
+
+    trainer = Trainer.from_argparse_args(args)
     trainer.fit(model, data_module)
 
 
@@ -79,14 +81,14 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--num_workers', default=6, type=int)
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--lr', default=1e-3, type=float)
 
     # LR Scheduler
+    parser.add_argument('--lr', default=1e-3, type=float)
     parser.add_argument("--optim", default="sgd", type=str)
     parser.add_argument('--lr_scheduler', choices=['step', 'cosine'], type=str)
     parser.add_argument('--lr_decay_steps', default=20, type=int)
-    parser.add_argument('--lr_decay_rate', default=0.1, type=float)
-    parser.add_argument('--lr_decay_min_lr', default=1e-3, type=float)
+    # parser.add_argument('--lr_decay_rate', default=0.1, type=float)
+    # parser.add_argument('--lr_decay_min_lr', default=1e-3, type=float)
     # parser.add_argument("--lr_gamma", default=0.99, type=float)
 
     # Restart Control
@@ -99,7 +101,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_name', default='pascal_voc', type=str)
     parser.add_argument('--data_dir', default='./test_data', type=str)
     parser.add_argument('--model_name', default='faster_rcnn_vgg16', type=str)
-    parser.add_argument('--loss', default='fast_rcnn_loss', type=str)
+    # parser.add_argument('--loss', default='fast_rcnn_loss', type=str)
     parser.add_argument('--weight_decay', default=5e-4, type=float)
     parser.add_argument('--no_augment', action='store_true')
     parser.add_argument('--log_dir', default='lightning_logs', type=str)
@@ -114,8 +116,10 @@ if __name__ == '__main__':
     parser = Trainer.add_argparse_args(parser)
 
     # Reset Some Default Trainer Arguments' Default Values
+    parser.set_defaults(accelerator="gpu", device=1)
     parser.set_defaults(max_epochs=14)
-
+    parser.set_defaults(log_every_n_steps=100)
+    
     args = parser.parse_args()
 
     # List Arguments

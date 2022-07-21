@@ -3,8 +3,8 @@ import importlib
 
 import torch
 from torch.nn import functional as F
-
-# from torchsummary import summary
+import torch.optim.lr_scheduler as lrs
+from torchsummary import summary
 
 import pytorch_lightning as pl
 from model.loss.faster_rcnn_loss import fast_rcnn_loc_loss, smooth_l1_loss
@@ -24,8 +24,8 @@ class MInterface(pl.LightningModule):
         self.load_model()
         
         # Device
-        # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        # self.model.to(device)
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.model.to(device)
 
         # Loss
         self.rpn_loc_loss_func = None
@@ -47,6 +47,73 @@ class MInterface(pl.LightningModule):
     def training_step(self, batch, batch_idx):
     
         imgs, bboxes, labels, diffs, scale = batch  # all on cpu
+        
+        # print("######### In Model Interface N##############")
+        # print("imgs: ", imgs.device)
+        # print("bboxes: ", bboxes.device)
+        # print("labels: ", labels.device)
+        (
+            rpn_locs, rpn_scores,
+            gt_rpn_locs, gt_rpn_labels,
+            roi_cls_locs, roi_scores,
+            gt_roi_locs, gt_roi_labels,
+            roi_samples
+        ) \
+            = self(imgs, bboxes, labels, scale)
+
+        # RPN LOSS
+        rpn_loc_loss = self.rpn_loc_loss_func(
+            rpn_locs, gt_rpn_locs, gt_rpn_labels, self.model.rpn_sigma
+        )
+        rpn_cls_loss = self.rpn_cls_loss_func(rpn_scores, gt_rpn_labels.long().cuda(), ignore_index=-1)
+
+        # ROI LOSS TODO: To understand!
+        n_sample = roi_cls_locs.shape[0]
+
+        roi_cls_locs = roi_cls_locs.view(n_sample, -1, 4)
+        roi_locs = roi_cls_locs[torch.arange(0, n_sample), gt_roi_labels.long()]
+        roi_loc_loss = self.roi_loc_loss_func(
+            roi_locs, gt_roi_locs, gt_roi_labels, self.model.roi_sigma
+        )
+        roi_cls_loss = self.roi_cls_loss_func(roi_scores, gt_roi_labels.long())
+
+        # TOTAL LOSS
+        loss = torch.sum(rpn_loc_loss + rpn_cls_loss + roi_loc_loss + roi_cls_loss)
+
+        roi_bboxes = loc2bbox(roi_samples, roi_locs)
+        gt_roi_bboxes = loc2bbox(roi_samples, gt_roi_locs)
+
+        preds = [
+            dict(
+                boxes=roi_bboxes,
+                scores=roi_scores,
+                labels=torch.argmax(F.softmax(rpn_scores)),
+            )
+        ]
+        target = [
+            dict(
+                boxes=gt_roi_bboxes,
+                labels=gt_roi_labels,
+            )
+        ]
+        
+        # self.train_metrics.update(preds, target)
+        self.log("t_rpn_loc_loss", rpn_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("t_rpn_cls_loss", rpn_cls_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("t_roi_loc_loss", roi_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("t_roi_cls_loss", roi_cls_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("t_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        
+        return {"loss": loss}
+
+    def validation_step(self, batch, batch_idx):
+        
+        imgs, bboxes, labels, diffs, scale = batch  # all on cpu
+        
+        # print("######### In Model Interface N##############")
+        # print("imgs: ", imgs.device)
+        # print("bboxes: ", bboxes.device)
+        # print("labels: ", labels.device)
         
         (
             rpn_locs, rpn_scores,
@@ -76,63 +143,24 @@ class MInterface(pl.LightningModule):
         # TOTAL LOSS
         loss = torch.sum(rpn_loc_loss + rpn_cls_loss + roi_loc_loss + roi_cls_loss)
 
-        self.log("t_rpn_loc_loss", rpn_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("t_rpn_cls_loss", rpn_cls_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("t_roi_loc_loss", roi_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("t_roi_cls_loss", roi_cls_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("t_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        
-        return {"loss": loss}
-
-    def validation_step(self, batch, batch_idx):
-        print("Model is :", self.model.training)
-        
-        imgs, bboxes, labels, diffs, scale = batch  # all on cpu
-        
-        (
-            rpn_locs, rpn_scores,
-            gt_rpn_locs, gt_rpn_labels,
-            roi_cls_locs, roi_scores,
-            gt_roi_locs, gt_roi_labels,
-            roi_samples
-        ) \
-            = self(imgs, bboxes, labels, scale)
-
-        # RPN LOSS
-        rpn_loc_loss = self.rpn_loc_loss_func(
-            rpn_locs, gt_rpn_locs, gt_rpn_labels, self.model.rpn_sigma
-        )
-        rpn_cls_loss = self.rpn_cls_loss_func(rpn_scores, gt_rpn_labels.long(), ignore_index=-1)
-
-        # ROI LOSS TODO: To understand!
-        n_sample = roi_cls_locs.shape[0]
-        roi_cls_locs = roi_cls_locs.view(n_sample, -1, 4)
-        roi_locs = roi_cls_locs[torch.arange(0, n_sample), gt_roi_labels.long()]
-        roi_loc_loss = self.roi_loc_loss_func(
-            roi_locs, gt_roi_locs, gt_roi_labels, self.model.roi_sigma
-        )
-        roi_cls_loss = self.roi_cls_loss_func(roi_scores, gt_roi_labels.long())
-
-        # TOTAL LOSS
-        loss = torch.sum(rpn_loc_loss + rpn_cls_loss + roi_loc_loss + roi_cls_loss)
-
         roi_bboxes = loc2bbox(roi_samples, roi_locs)
+        gt_roi_bboxes = loc2bbox(roi_samples, gt_roi_locs)
 
         preds = [
             dict(
-                boxes=roi_bboxes[..., [1, 0, 3, 2]],
+                boxes=roi_bboxes,
                 scores=roi_scores,
-                labels=torch.argmax(F.softmax(rpn_scores, dim=-1)),
+                labels=torch.argmax(F.softmax(rpn_scores)),
             )
         ]
         target = [
             dict(
-                boxes=bboxes[..., [1, 0, 3, 2]],
-                labels=labels,
+                boxes=gt_roi_bboxes,
+                labels=gt_roi_labels,
             )
         ]
         
-        self.train_metrics.update(preds, target)
+        # self.train_metrics.update(preds, target)
         self.log("v_rpn_loc_loss", rpn_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("v_rpn_cls_loss", rpn_cls_loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log("v_roi_loc_loss", roi_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -153,37 +181,24 @@ class MInterface(pl.LightningModule):
         self.val_metrics.reset()
 
     def configure_optimizers(self):
-        
-        # Init
-        params = []
         optimizer = None
-        scheduler = None
- 
-        # Model Parameters
+        params = []
         for key, value in dict(self.model.named_parameters()).items():
             if value.requires_grad:
                 if 'bias' in key:
                     params += [{'params': [value], 'lr': self.hparams.lr * 2, 'weight_decay': 0}]
                 else:
                     params += [{'params': [value], 'lr': self.hparams.lr, 'weight_decay': self.hparams.weight_decay}]
-        
-        # Optimizer            
+                    
+                    
         if self.hparams.optim == "adam":
             # optimizer = torch.optim.Adam(self.model.parameters(), lr=self.hparams.lr)
             optimizer = torch.optim.Adam(params)
         elif self.hparams.optim == "sgd":
             # optimizer = torch.optim.SGD(self.model.parameters(), lr=self.hparams.lr, momentum=0.9)
             optimizer = torch.optim.SGD(params, momentum=0.9)
-        
-        # LR Scheduler
-        if self.hparams.lr_scheduler == "step":
-            scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=9, gamma=0.1, verbose=True)
-        elif self.hparams.lr_scheduler == "cosine":
-            pass
-        else:
-            return optimizer
-        
-        return ([optimizer], [scheduler])
+
+        return optimizer
 
     def configure_loss(self):
         self.rpn_loc_loss_func = fast_rcnn_loc_loss
@@ -204,6 +219,7 @@ class MInterface(pl.LightningModule):
             raise ValueError(
                 f'Invalid Module File Name or Invalid Class Name {name}.{camel_name}!')
         self.model = self.instancialize(Model)
+        # summary(self.model, torch.zeros((1, 3, 224, 224)), torch.zeros((1, 4)), torch.zeros((1,)), 1)
 
     def instancialize(self, Model, **other_args):
         """ Instancialize a model using the corresponding parameters

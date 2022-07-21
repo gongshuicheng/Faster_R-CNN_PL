@@ -1,1 +1,1 @@
-python main.py --batch_size=1
+python main.py --batch_size=1 --data_dir=../VOC2007 --lr_scheduler=step
