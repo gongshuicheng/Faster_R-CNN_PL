@@ -11,7 +11,7 @@ from model.faster_rcnn_trainer import FasterRcnnTrainer
 def main():
     extractor = vgg16(pretrained=True).features[:-1]
 
-    test_sub_module = "faster_rcnn_vgg16"
+    test_sub_module = "faster_rcnn"
 
     from data.data_interface import DInterface
 
@@ -20,6 +20,10 @@ def main():
     imgs, gt_bboxes, gt_labels, diffs, scale = dataset.train_set[0]
     img_size = imgs.shape[1:]
     imgs = imgs.unsqueeze(0)  # Simulate one batch with batch size 1
+    
+    val_imgs, val_gt_bboxes, val_gt_labels, val_diffs, val_scale = dataset.val_set[0]
+    val_img_size = imgs.shape[1:]
+    val_imgs = imgs.unsqueeze(0)  # Simulate one batch with batch size 1
     # H, W of the original image
 
     if test_sub_module == "extractor":
@@ -70,9 +74,13 @@ def main():
     #     trainer = FasterRcnnTrainer()
     #     print(trainer.__dict__)
     elif test_sub_module == "faster_rcnn":
-        rpn = RegionProposalNetwork()
-        head = None
-        faster_rcnn = FasterRcnn(extractor, rpn, head)
+        model = FasterRcnnVgg16()
+        
+        # Val
+        model.eval()
+        model.
+        
+        
 
     elif test_sub_module == "proposal_creator":
         # Use a model to generate locs, scores, anchors

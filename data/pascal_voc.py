@@ -19,13 +19,14 @@ class PascalVoc(Dataset):
 
     """
     def __init__(
-            self,
-            data_dir=r'../Datasets/PASCALVOC/VOCdevkit/VOC2007',
-            trans=None,
-            split="train",
-            use_difficult=True,
-            return_difficult=True,
-            label_name=VOC_BBOX_LABEL_NAMES,
+        self,
+        data_dir=r'../Datasets/PASCALVOC/VOCdevkit/VOC2007',
+        year=["2007", "2012"],
+        trans=None,
+        split="train",
+        use_difficult=True,
+        return_difficult=True,
+        label_name=VOC_BBOX_LABEL_NAMES,
     ):
         # Set all input args as attributes
         self.__dict__.update(locals())
@@ -89,7 +90,6 @@ class PascalVoc(Dataset):
         img_path = os.path.join(self.data_dir, "JPEGImages", id_ + ".jpg")
         img = Image.open(img_path)  # PIL type
         bboxes, labels, difficulties = self.get_annotations(id_)
-
         scale = torch.tensor([1.0], dtype=torch.float32)
 
         if self.trans:

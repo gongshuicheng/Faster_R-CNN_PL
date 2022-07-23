@@ -26,7 +26,10 @@ def loc2bbox(src_bboxes, locs):
     dx = locs[:, 1::4]
     dh = locs[:, 2::4]
     dw = locs[:, 3::4]
-
+    
+    # print(dy.shape)
+    # print(src_height.shape)
+    # print(src_ctr_y.shape)
     ctr_y = dy * src_height.unsqueeze(-1).to(device) + src_ctr_y.unsqueeze(-1).to(device)
     ctr_x = dx * src_width.unsqueeze(-1).to(device) + src_ctr_x.unsqueeze(-1).to(device)
     h = torch.exp(dh) * src_height.unsqueeze(-1).to(device)
@@ -122,7 +125,8 @@ def generate_anchor_base(
         (len(ratios) * len(anchor_scales), 4),
         dtype=torch.float32
     )
-
+    
+    # Area: 128^2, 256^2, 512^2
     for i in range(len(ratios)):
         for j in range(len(anchor_scales)):
             h = base_size * anchor_scales[j] * math.sqrt(ratios[i])

@@ -143,7 +143,6 @@ class RegionProposalNetwork(nn.Module):  # RPN
             batch_idx = i * torch.ones((len(roi),), dtype=torch.int32)
             rois.append(roi)
             roi_idx.append(batch_idx)
-
         rois = torch.cat(rois, dim=0)
         roi_idx = torch.cat(roi_idx, dim=0)
         
@@ -197,6 +196,7 @@ class FasterRcnn(nn.Module):
         self.extractor = extractor
         self.rpn = rpn
         self.head = head
+        self.n_classes = self.head.n_classes
 
         self.anchor_target_creator = AnchorTargetCreator()
         self.proposal_target_creator = ProposalTargetCreator()
@@ -219,10 +219,6 @@ class FasterRcnn(nn.Module):
         else:
             raise ValueError('preset must be visualize or evaluate')
 
-    @property
-    def n_classes(self):
-        return self.head.n_classes
-
     def forward(self, imgs, bboxes, labels, scale):
         
         # print("self.device :", self.device)
@@ -232,10 +228,12 @@ class FasterRcnn(nn.Module):
         # print("labels: ", labels.device)
         
         img_size = imgs.shape[2:]  # imgs (torch.tensor): [batch_size, C, H, W]
+        
+        # Extract Features
         features = self.extractor(imgs)
         rpn_locs, rpn_scores, rois, roi_idx, shifted_anchors = self.rpn(features, img_size, scale)
 
-        # RPN Ground Truth
+        # RPN Tragets
         gt_rpn_locs, gt_rpn_labels = self.anchor_target_creator(
             bboxes, shifted_anchors, img_size
         )
@@ -246,7 +244,10 @@ class FasterRcnn(nn.Module):
             self.loc_normalize_mean,
             self.loc_normalize_std
         )
-        roi_sample_idx = torch.zeros(len(roi_samples)).to(self.device)
+        roi_sample_idx = torch.zeros(len(roi_samples))
+        
+        
+        # roi_sample_idx = torch.zeros(len(roi_samples)).to(self.device)
         
         # print("features: ", features.device)
         # print("roi_samples:", roi_samples.device)
@@ -263,83 +264,69 @@ class FasterRcnn(nn.Module):
         )
     
     def predict(self, imgs, scale):
-        pass
-    # def _suppress(self, raw_cls_bboxes, raw_probs):
-    #     bboxes = []
-    #     labels = []
-    #     scores = []
-    #     # skip cls_id = 0 because it is the background class
-    #     for i in range(1, self.n_classes):
-    #         cls_bbox_i = raw_cls_bboxes.reshape((-1, self.n_classes, 4))[:, i, :]
-    #         prob_i = raw_probs[:, i]
-    #         mask = prob_i > self.score_thresh  # First use score threshold
-    #         cls_bbox_i = cls_bbox_i[mask]
-    #         prob_i = prob_i[mask]
-    #         keep = nms(cls_bbox_i, prob_i, self.nms_thresh)  # Second use NMS threshold
-    #
-    #         bboxes.append(cls_bbox_i[keep].cpu())
-    #         # The labels are in [0, self.n_class - 2].
-    #         labels.append((i - 1) * torch.ones((len(keep),)))
-    #         scores.append(prob_i[keep].cpu())
-    #
-    #     bboxes = torch.stack(bboxes, 0).type(torch.float32)
-    #     labels = torch.stack(labels, 0).type(torch.int32)
-    #     scores = torch.stack(scores, 0).type(torch.float32)
-    #     return bboxes, labels, scores
+        # self.eval()
+        # print(f"Model RPN Training: {self.rpn.training}")  # False
+        
+        img_size = imgs.shape[2:]
+        
+        # Scale on cuda but torch.tensor(img_size) on cpu
+        original_size = torch.tensor(img_size, dtype=torch.float32).to(scale.device) / scale
 
-    # @without_grad
-    # def predict(self, imgs, sizes=None, visualize=False):
-    #     self.eval()
-    #     if visualize:
-    #         self.use_preset("visualize")
-    #         prepared_imgs = list()
-    #         sizes = list()
-    #         for img in imgs:
-    #             size = img.shape[1:]  # Size before resize
-    #             img = preprocess(img)
-    #             prepared_imgs.append(img)
-    #             sizes.append(size)
-    #     else:
-    #         prepared_imgs = imgs
-    #
-    #     bboxes = list()
-    #     labels = list()
-    #     scores = list()
-    #
-    #     for img, size in zip(prepared_imgs, sizes):
-    #         scale = img.shape[3] / size[1]
-    #         # Get the roi result from the Net
-    #         roi_cls_locs, roi_scores, rois, _ = self(img, scale=scale)
-    #         # Batch size 1
-    #         roi_score = roi_scores.data
-    #         roi_cls_loc = roi_cls_locs.data
-    #         roi = rois / scale  # scale roi back
-    #
-    #         mean = torch.Tensor(self.loc_normalize_mean).cuda().repeat(self.n_class)[None]
-    #         std = torch.Tensor(self.loc_normalize_std).cuda().repeat(self.n_class)[None]
-    #
-    #         roi_cls_loc = (roi_cls_loc * std + mean)
-    #         roi_cls_loc = roi_cls_loc.view(-1, self.n_class, 4)
-    #         roi = roi.view(-1, 1, 4).expand_as(roi_cls_loc)
-    #         cls_bbox = loc2bbox(roi.view(-1, 4), roi_cls_loc.view(-1, 4))
-    #         cls_bbox = cls_bbox.view(-1, self.n_class * 4)
-    #
-    #         # clip bbox
-    #         cls_bbox[:, 0::2] = (cls_bbox[:, 0::2]).clamp(min=0, max=size[0])
-    #         cls_bbox[:, 1::2] = (cls_bbox[:, 1::2]).clamp(min=0, max=size[1])
-    #
-    #         prob = F.softmax(roi_score, dim=1)
-    #
-    #         bboxes_p_img, labels_per_img, scores_p_img = self._suppress(cls_bbox, prob)
-    #         bboxes.append(bboxes_p_img)
-    #         labels.append(labels_per_img)
-    #         scores.append(scores_p_img)
-    #
-    #     self.use_preset("evaluate")
-    #     self.train()
-    #     return bboxes, labels, scores
+        
+        # Extract Features
+        # rois: torch.Size([n_post_nms, 4])
+        # roi_cls_locs: torch.Size([n_post_nms, n_classes*4])
+        features = self.extractor(imgs)
+        _, _, rois, roi_idx, _ = self.rpn(features, img_size, scale)
+        roi_cls_locs, roi_scores = self.head(features, rois, roi_idx)
+        
+        # Original Locs
+        # mean/std: torch.Size([1, n_classes*4])
+        # original_roi_cls_locs: torch.Size([n_post_nms, n_classes, 4])
+        # rois: torch.Size([n_post_nms, n_classes, 4])
+        # mean = torch.tensor(self.loc_normalize_mean).cuda()[None]
+        # std = torch.tensor(self.loc_normalize_std).cuda()[None]
+        mean = torch.tensor(self.loc_normalize_mean).cuda(). \
+                repeat(self.n_classes)[None]
+        std = torch.tensor(self.loc_normalize_std).cuda(). \
+            repeat(self.n_classes)[None]
+        original_roi_cls_locs = (roi_cls_locs * std + mean)
+        original_roi_cls_locs = original_roi_cls_locs.view(-1, self.n_classes, 4)  # for rois expanding
+        rois = rois.view(-1, 1, 4).expand_as(original_roi_cls_locs).contiguous().view(-1, 4) 
+        original_roi_cls_locs = original_roi_cls_locs.view(-1, 4)
 
-    # def scale_lr(self, decay=0.1):
-    #     for param_group in self.optimizer.param_groups:
-    #         param_group['lr'] *= decay
-    #     return self.optimizer
+        
+        original_roi_cls_bboxes = loc2bbox(rois, original_roi_cls_locs)
+        
+        # Clip BBOX
+        original_roi_cls_bboxes[:, 0::2] = (original_roi_cls_bboxes[:, 0::2]).clamp(min=0, max=original_size[0])
+        original_roi_cls_bboxes[:, 1::2] = (original_roi_cls_bboxes[:, 1::2]).clamp(min=0, max=original_size[1])
+        
+        prob = F.softmax(roi_scores, dim=-1)
+        
+        pred_bboxes, pred_labels, pred_scores = self._suppress(original_roi_cls_bboxes, prob)
+        
+        return pred_bboxes, pred_labels, pred_scores
+    
+    
+    def _suppress(self, raw_cls_bboxes, raw_probs):
+        bboxes = []
+        labels = []
+        scores = []
+        for i in range(1, self.n_classes):
+            cls_bbox_i = raw_cls_bboxes.reshape((-1, self.n_classes, 4))[:, i, :]  # torch.Size([n_post_nms, 4])
+            prob_i = raw_probs[:, i]
+            mask = prob_i > self.score_thresh  # First use score threshold
+            masked_cls_bbox_i = cls_bbox_i[mask]
+            masked_prob_i = prob_i[mask]
+            keep = nms(masked_cls_bbox_i, masked_prob_i, self.nms_thresh)  # Second use NMS threshold
+    
+            bboxes.append(masked_cls_bbox_i[keep])
+            # The labels are in [0, self.n_class - 2].
+            labels.append((i-1) * torch.ones((len(keep),)))
+            scores.append(masked_prob_i[keep])
+    
+        bboxes = torch.cat(bboxes, dim=0).type(torch.float32).to(self.device)  # torch.Size([n_suppressed_bboxes, 4])
+        labels = torch.cat(labels, dim=0).type(torch.int32).to(self.device)  # torch.Size([n_suppressed_bboxes])
+        scores = torch.cat(scores, dim=0).type(torch.float32).to(self.device)  # torch.Size(n_suppressed_bboxes])
+        return bboxes, labels, scores

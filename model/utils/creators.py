@@ -134,11 +134,12 @@ class ProposalTargetCreator(object):
 
         # Offset range of classes from [0, n_fg_class - 1] to [1, n_fg_class].
         # The label with value 0 is the background.
-        # print(gt_labels)  # tensor([[8, 8, 8, 8, 8]])
-        # print(roi_argmax_ious)  # tensor([0, 0, 0, ..., 1, 0, 0])
-        # print(roi_argmax_ious)
+        
+        # gt_labels: torch.Size([1, n_bboxes])
+        # roi_argmax_ious: torch.Size([n_rois])
+        # gt_roi_labels: torch.Size([n_rois]) -> torch.Size([n_samples])
+        # roi_samples: torch.Size([n_samples, 4])
         gt_roi_labels = gt_labels[0][roi_argmax_ious] + 1
-        # print(gt_roi_labels)
         gt_roi_labels = gt_roi_labels[keep_idx]
         gt_roi_labels[len(pos_idx):] = 0  # negative labels --> 0
         roi_samples = rois[keep_idx]
@@ -146,9 +147,10 @@ class ProposalTargetCreator(object):
         # Compute offsets and scales to match sampled rois to the GTs.
         roi_samples = roi_samples.to(device)
         gt_roi_locs = bbox2loc(roi_samples, gt_bboxes[0][roi_argmax_ious[keep_idx]])
+        
+        # Normalize
         gt_roi_locs = (gt_roi_locs.to(device) - torch.tensor(loc_normalize_mean, dtype=torch.float32).to(device)) \
                        / torch.tensor(loc_normalize_std, dtype=torch.float32).to(device)
 
-        # print(gt_roi_labels)
         return roi_samples, gt_roi_locs, gt_roi_labels
 

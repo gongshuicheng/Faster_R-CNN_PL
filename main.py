@@ -76,6 +76,9 @@ def main(args):
 if __name__ == '__main__':
     parser = ArgumentParser()
     
+    # Dataset
+    parser.add_argument("--year", default=["2007", "2012"], type=list)
+    
     # Basic Training Control
     # parser.add_argument("--val_mode", default="three-way-holdout", type=str)
     parser.add_argument('--batch_size', default=1, type=int)

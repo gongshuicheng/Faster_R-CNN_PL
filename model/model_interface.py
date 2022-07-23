@@ -85,62 +85,52 @@ class MInterface(pl.LightningModule):
         return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
-        print("Model is :", self.model.training)
+        # print("Model is :", self.model.training)  # False
         
-        imgs, bboxes, labels, diffs, scale = batch  # all on cpu
+        imgs, bboxes, labels, diffs, scale = batch  # All on cpu with in one-batch
         
-        (
-            rpn_locs, rpn_scores,
-            gt_rpn_locs, gt_rpn_labels,
-            roi_cls_locs, roi_scores,
-            gt_roi_locs, gt_roi_labels,
-            roi_samples
-        ) \
-            = self(imgs, bboxes, labels, scale)
+        
+        # pred_bboxes: torch.Size([n_pred_bboxes, 4])
+        # pred_labels: torch.Size([n_pred_bboxes])
+        # pred_scores: torch.Size([n_pred_bboxes])
+        pred_bboxes, pred_labels, pred_scores = self.model.predict(imgs, scale)
+        
 
-        # RPN LOSS
-        rpn_loc_loss = self.rpn_loc_loss_func(
-            rpn_locs, gt_rpn_locs, gt_rpn_labels, self.model.rpn_sigma
-        )
-        rpn_cls_loss = self.rpn_cls_loss_func(rpn_scores, gt_rpn_labels.long(), ignore_index=-1)
 
-        # ROI LOSS TODO: To understand!
-        n_sample = roi_cls_locs.shape[0]
-        roi_cls_locs = roi_cls_locs.view(n_sample, -1, 4)
-        roi_locs = roi_cls_locs[torch.arange(0, n_sample), gt_roi_labels.long()]
-        roi_loc_loss = self.roi_loc_loss_func(
-            roi_locs, gt_roi_locs, gt_roi_labels, self.model.roi_sigma
-        )
-        roi_cls_loss = self.roi_cls_loss_func(roi_scores, gt_roi_labels.long())
+#         # ROI LOSS TODO: To understand!
+#         n_sample = roi_cls_locs.shape[0]
+#         roi_cls_locs = roi_cls_locs.view(n_sample, -1, 4)
+#         roi_locs = roi_cls_locs[torch.arange(0, n_sample), gt_roi_labels.long()]
+#         roi_loc_loss = self.roi_loc_loss_func(
+#             roi_locs, gt_roi_locs, gt_roi_labels, self.model.roi_sigma
+#         )
+#         roi_cls_loss = self.roi_cls_loss_func(roi_scores, gt_roi_labels.long())
 
-        # TOTAL LOSS
-        loss = torch.sum(rpn_loc_loss + rpn_cls_loss + roi_loc_loss + roi_cls_loss)
+#         # TOTAL LOSS
+#         loss = torch.sum(rpn_loc_loss + rpn_cls_loss + roi_loc_loss + roi_cls_loss)
 
-        roi_bboxes = loc2bbox(roi_samples, roi_locs)
+#         roi_bboxes = loc2bbox(roi_samples, roi_locs)
 
         preds = [
             dict(
-                boxes=roi_bboxes[..., [1, 0, 3, 2]],
-                scores=roi_scores,
-                labels=torch.argmax(F.softmax(rpn_scores, dim=-1)),
+                boxes=pred_bboxes[..., [1, 0, 3, 2]],
+                scores=pred_scores,
+                labels=pred_labels,
             )
         ]
         target = [
             dict(
-                boxes=bboxes[..., [1, 0, 3, 2]],
-                labels=labels,
+                boxes=bboxes[0][..., [1, 0, 3, 2]],
+                labels=labels[0],
             )
         ]
         
-        self.train_metrics.update(preds, target)
-        self.log("v_rpn_loc_loss", rpn_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("v_rpn_cls_loss", rpn_cls_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("v_roi_loc_loss", roi_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("v_roi_cls_loss", roi_cls_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log("v_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-        
-        return {"loss": loss}
+        self.val_metrics.update(preds, target)
+        # self.log("v_roi_loc_loss", roi_loc_loss, on_step=True, on_epoch=True, prog_bar=True)
+        # self.log("v_roi_cls_loss", roi_cls_loss, on_step=True, on_epoch=True, prog_bar=True)
+        # self.log("v_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
 
+    
     def test_step(self, batch, batch_idx):
         # Here we just reuse the validation_step for testing
         # return self.validation_step(batch, batch_idx)
@@ -150,10 +140,10 @@ class MInterface(pl.LightningModule):
         self.train_metrics.reset()
 
     def validation_epoch_end(self, val_step_outputs):
+        self.log("v_mAP", self.val_metrics.compute(), on_epoch=True)
         self.val_metrics.reset()
 
     def configure_optimizers(self):
-        
         # Init
         params = []
         optimizer = None
